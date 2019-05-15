@@ -2,6 +2,8 @@ package ansiblejob
 
 import (
 	"context"
+	batchv1 "k8s.io/api/batch/v1"
+	"path"
 
 	k8sv1alpha1 "github.com/rafi/ansible-operator/pkg/apis/k8s/v1alpha1"
 
@@ -54,7 +56,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	// TODO(user): Modify this to be the types you create that are owned by the primary resource
 	// Watch for changes to secondary resource Pods and requeue the owner AnsibleJob
-	err = c.Watch(&source.Kind{Type: &corev1.Pod{}}, &handler.EnqueueRequestForOwner{
+	err = c.Watch(&source.Kind{Type: &batchv1.Job{}}, &handler.EnqueueRequestForOwner{
 		IsController: true,
 		OwnerType:    &k8sv1alpha1.AnsibleJob{},
 	})
@@ -101,7 +103,7 @@ func (r *ReconcileAnsibleJob) Reconcile(request reconcile.Request) (reconcile.Re
 	}
 
 	// Define a new Pod object
-	pod := newPodForCR(instance)
+	pod := newJobForCR(instance)
 
 	// Set AnsibleJob instance as the owner and controller
 	if err := controllerutil.SetControllerReference(instance, pod, r.scheme); err != nil {
@@ -129,23 +131,78 @@ func (r *ReconcileAnsibleJob) Reconcile(request reconcile.Request) (reconcile.Re
 	return reconcile.Result{}, nil
 }
 
-// newPodForCR returns a busybox pod with the same name/namespace as the cr
-func newPodForCR(cr *k8sv1alpha1.AnsibleJob) *corev1.Pod {
-	labels := map[string]string{
-		"app": cr.Name,
-	}
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-pod",
-			Namespace: cr.Namespace,
-			Labels:    labels,
+// newJobForCR returns a pod with the same name/namespace as the cr
+func newJobForCR(cr *k8sv1alpha1.AnsibleJob) *batchv1.Job {
+	var restartPolicy = corev1.RestartPolicyNever
+	var Containers []corev1.Container
+	var backoffLimit int32 = 0
+	var completions int32 = 1
+	var parallelism int32 = 1
+
+	Containers = append(Containers, corev1.Container{
+		Name:       "ansible",
+		Image:      "ansible/ansible-runner:1.2.0",
+		WorkingDir: path.Join("/srv", "project"),
+		Args: []string{
+			"ansible-playbook",
+			"--inventory",
+			cr.Spec.Inventory,
+			"--limit",
+			cr.Spec.Limit,
+			cr.Spec.Playbook,
 		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:    "busybox",
-					Image:   "busybox",
-					Command: []string{"sleep", "3600"},
+		Env: []corev1.EnvVar{{Name: "ANSIBLE_FORCE_COLOR", Value: "true"}},
+		VolumeMounts: []corev1.VolumeMount{
+			corev1.VolumeMount{Name: "project", MountPath: "/srv"},
+		},
+	})
+
+	initContainers := []corev1.Container{
+		corev1.Container{
+			Name:  "git-sync",
+			Image: "k8s.gcr.io/git-sync:v3.1.1",
+			VolumeMounts: []corev1.VolumeMount{
+				corev1.VolumeMount{
+					Name:      "project",
+					MountPath: "/tmp/git",
+				},
+			},
+			Env: []corev1.EnvVar{
+				corev1.EnvVar{Name: "GIT_SYNC_REPO", Value: cr.Spec.Repo},
+				corev1.EnvVar{Name: "GIT_SYNC_ROOT", Value: "/tmp/git"},
+				corev1.EnvVar{Name: "GIT_SYNC_DEST", Value: "project"},
+				corev1.EnvVar{Name: "GIT_SYNC_ONE_TIME", Value: "true"},
+			},
+		},
+	}
+
+	Volumes := []corev1.Volume{
+		{
+			Name: "project",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+	}
+
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cr.Name,
+			Namespace: cr.Namespace,
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit: &backoffLimit,
+			Completions:  &completions,
+			Parallelism:  &parallelism,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: cr.Name,
+				},
+				Spec: corev1.PodSpec{
+					RestartPolicy:  restartPolicy,
+					Volumes:        Volumes,
+					InitContainers: initContainers,
+					Containers:     Containers,
 				},
 			},
 		},

@@ -1,0 +1,7 @@
+apiVersion: k8s.tikalk.com/v1alpha1
+kind: AnsibleJob
+metadata:
+  name: example-ansiblejob
+spec:
+  # Add fields here
+  size: 3

@@ -1,7 +1,9 @@
 apiVersion: k8s.tikalk.com/v1alpha1
 kind: AnsibleJob
 metadata:
-  name: example-ansiblejob
+  name: playbook-debug
 spec:
-  # Add fields here
-  size: 3
+  repo: https://github.com/tikalk/ansible-operator-test.git
+  playbook: playbooks/debug.yml
+  inventory: ./inventory
+  limit: local
